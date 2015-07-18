@@ -80,6 +80,10 @@
 #include "include/FLACDecoder.h"
 #endif
 
+#ifdef MTK_HARDWARE
+#include <bufferallocator/OMXCodecBufferAllocator.h>
+#endif
+
 namespace android {
 
 #ifdef USE_SAMSUNG_COLORFORMAT
@@ -417,6 +421,26 @@ uint32_t OMXCodec::getComponentQuirks(
         quirks |= kRequiresFlushCompleteEmulation;
     }
 #endif // DOLBY_UDC
+
+#ifdef MTK_HARDWARE
+    if (list->codecHasQuirk(
+                index, "decoder-lies-about-number-of-channels")) {
+        quirks |= kDecoderLiesAboutNumberOfChannels;
+    }
+    if (list->codecHasQuirk(
+                index, "supports-multiple-frames-per-input-buffer")) {
+        quirks |= kSupportsMultipleFramesPerInputBuffer;
+    }
+    if (list->codecHasQuirk(
+                index, "wants-NAL-fragments")) {
+        quirks |= kWantsNALFragments;
+    }
+    if (list->codecHasQuirk(
+                index, "avoid-memcpy-input-recording-frames")) {
+        quirks |= kAvoidMemcopyInputRecordingFrames;
+    }
+#endif
+
 #ifdef OMAP_ENHANCEMENT
     if (list->codecHasQuirk(
                 index, "avoid-memcopy-input-recording-frames")) {
@@ -674,6 +698,13 @@ status_t OMXCodec::parseAVCCodecSpecificData(
 status_t OMXCodec::configureCodec(const sp<MetaData> &meta) {
     ALOGV("configureCodec protected=%d",
          (mFlags & kEnableGrallocUsageProtected) ? 1 : 0);
+
+#ifdef MTK_HARDWARE
+    if (!strncmp(mComponentName, "OMX.MTK.", 8)) {
+        mMtkBufferAllocator->initCodec(mMIME, meta);
+    }
+#endif
+
 
     if (!(mFlags & kIgnoreCodecSpecificData)) {
         uint32_t type;
@@ -1158,6 +1189,15 @@ static size_t getFrameSize(
         case OMX_SEC_COLOR_FormatNV12TPhysicalAddress:
         case OMX_SEC_COLOR_FormatNV12LPhysicalAddress:
 #endif
+#ifdef MTK_HARDWARE
+        /*
+         * FIXME: We use this FrameSize for temp solution
+         * in order to check functionality,
+         * and we need to get FrameSize accurately in the future
+         */
+        case OMX_MTK_COLOR_FormatYV12:
+        case OMX_COLOR_FormatVendorMTKYUV:
+#endif
             return (width * height * 3) / 2;
 #ifdef USE_SAMSUNG_COLORFORMAT
         case OMX_SEC_COLOR_FormatNV12LVirtualAddress:
@@ -1619,6 +1659,7 @@ status_t OMXCodec::setupAVCEncoderParameters(const sp<MetaData>& meta) {
     h264type.eLevel = static_cast<OMX_VIDEO_AVCLEVELTYPE>(profileLevel.mLevel);
 
     // XXX
+#ifndef MTK_HARDWARE
 #ifdef USE_TI_DUCATI_H264_PROFILE
     if ((strncmp(mComponentName, "OMX.TI.DUCATI1", 14) != 0)
             && (h264type.eProfile != OMX_VIDEO_AVCProfileBaseline)) {
@@ -1633,6 +1674,7 @@ status_t OMXCodec::setupAVCEncoderParameters(const sp<MetaData>& meta) {
             h264type.eProfile);
         h264type.eProfile = OMX_VIDEO_AVCProfileBaseline;
     }
+#endif
 
     if (h264type.eProfile == OMX_VIDEO_AVCProfileBaseline) {
         h264type.nSliceHeaderSpacing = 0;
@@ -1947,6 +1989,10 @@ OMXCodec::OMXCodec(
     } else
 #endif
         mSource = source;
+
+#ifdef MTK_HARDWARE
+    mMtkBufferAllocator = new OMXCodecBufferAllocator(this);
+#endif
 }
 
 // static
@@ -2070,8 +2116,17 @@ OMXCodec::~OMXCodec() {
 
     mNode = NULL;
 
+#ifdef MTK_HARDWARE
+    if (!strncmp(mComponentName, "OMX.MTK.", 8)) {
+        mMtkBufferAllocator->releaseBuffers();
+    } else {
+        releaseMediaBuffersOn(kPortIndexOutput);
+        releaseMediaBuffersOn(kPortIndexInput);
+    }
+#else
     releaseMediaBuffersOn(kPortIndexOutput);
     releaseMediaBuffersOn(kPortIndexInput);
+#endif
 
     setState(DEAD);
 
@@ -2145,6 +2200,12 @@ status_t OMXCodec::allocateBuffers() {
 }
 
 status_t OMXCodec::allocateBuffersOnPort(OMX_U32 portIndex) {
+#ifdef MTK_HARDWARE
+    if (!strncmp(mComponentName, "OMX.MTK.", 8)) {
+        return mMtkBufferAllocator->allocateBuffersOnPort(portIndex);
+    }
+#endif
+
     if (mNativeWindow != NULL && portIndex == kPortIndexOutput) {
         return allocateOutputBuffersFromNativeWindow();
     }
@@ -6026,6 +6087,10 @@ void OMXCodec::initOutputFormat(const sp<MetaData> &inputFormat) {
                 mOutputFormat->setInt32(kKeyColorFormat, OMX_QCOM_COLOR_FormatYVU420SemiPlanar);
             else
 #endif
+#ifdef MTK_HARDWARE
+            mOutputFormat->setInt32(kKeyStride, video_def->nStride);
+            mOutputFormat->setInt32(kKeySliceHeight, video_def->nSliceHeight);
+#endif
             mOutputFormat->setInt32(kKeyColorFormat, video_def->eColorFormat);
 
             if (!mIsEncoder) {
@@ -6068,9 +6133,12 @@ void OMXCodec::initOutputFormat(const sp<MetaData> &inputFormat) {
                 }
 
                 if (mNativeWindow != NULL) {
+#ifndef MTK_HARDWARE
                      if (mInSmoothStreamingMode) {
                          mOutputCropChanged = true;
-                     } else {
+                     } else
+#endif
+                     {
                          initNativeWindowCrop();
                      }
                 }
@@ -6156,7 +6224,7 @@ status_t OMXCodec::resumeLocked(bool drainInputBuf) {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifdef OMAP_ENHANCEMENT
+#if defined(OMAP_ENHANCEMENT) || defined(MTK_HARDWARE)
 void OMXCodec::restorePatchedDataPointer(BufferInfo *info) {
     CHECK(mIsEncoder && (mQuirks & kAvoidMemcopyInputRecordingFrames));
     CHECK(mOMXLivesLocally);
@@ -6165,6 +6233,7 @@ void OMXCodec::restorePatchedDataPointer(BufferInfo *info) {
     header->pBuffer = (OMX_U8 *)info->mData;
 }
 #endif
+
 status_t QueryCodecs(
         const sp<IOMX> &omx,
         const char *mime, bool queryDecoders, bool hwCodecOnly,

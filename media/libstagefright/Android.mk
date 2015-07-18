@@ -188,6 +188,23 @@ ifeq ($(TARGET_ENABLE_OFFLOAD_ENHANCEMENTS),true)
 endif
 endif
 
+ifeq ($(BOARD_HAS_MTK_HARDWARE),true)
+    ifeq ($(BOARD_MTK_OMX_USES_PRIVATE_YUV),true)
+        LOCAL_CFLAGS += -DMTK_OMX_USES_PRIVATE_YUV
+    endif
+
+    LOCAL_C_INCLUDES += \
+        $(TOP)/hardware/mediatek/media/include
+
+    LOCAL_SHARED_LIBRARIES +=  \
+        libdpframework \
+        libstagefright_memutil
+
+    LOCAL_STATIC_LIBRARIES += \
+        libstagefright_bufferallocator \
+        libstagefright_mtkcolorconverter
+endif
+
 ifeq ($(TARGET_QCOM_LEGACY_OMX),true)
         LOCAL_CFLAGS     += -DQCOM_LEGACY_OMX
         LOCAL_CFLAGS     += -DQCOM_LEGACY_MMPARSER
